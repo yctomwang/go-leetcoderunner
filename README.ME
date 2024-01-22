@@ -3,3 +3,4 @@
   "codeSnippet": "func twoSum(nums []int, target int) []int {\n    // Create a map to store the indices of the numbers\n    indices := make(map[int]int)\n\n    for i, num := range nums {\n        // Check if the complement (target - num) exists in the map\n        if val, found := indices[target - num]; found {\n            // If found, return the indices of the complement and the current number\n            return []int{val, i}\n        }\n        // Store the index of the current number\n        indices[num] = i\n    }\n\n    // Return an empty slice if no solution is found\n    return []int{}\n}"
 }
 //todo: we can implement concurrency in golang which is the part i look forward to the most :)
+//todo: introduce mage into this project 
