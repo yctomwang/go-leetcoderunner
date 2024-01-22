@@ -3,16 +3,14 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"log"
-	"os"
-	"strings"
-	"time"
-
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/sqs"
 	"github.com/google/uuid"
 	"io/ioutil"
+	"log"
+	"os"
+	"strings"
 )
 
 const (
@@ -72,11 +70,19 @@ func main() {
 	}))
 	sqsClient := sqs.New(sess)
 
+	// Create a channel to communicate between goroutines
+	messageChannel := make(chan *sqs.Message)
+
+	// Start multiple goroutines to process messages concurrently
+	for i := 0; i < 10; i++ { // You can adjust the number of goroutines as needed
+		go processMessages(messageChannel, sqsClient)
+	}
+
 	for {
 		// Poll the SQS queue for messages
 		result, err := sqsClient.ReceiveMessage(&sqs.ReceiveMessageInput{
 			QueueUrl:            aws.String(sqsQueueURL),
-			MaxNumberOfMessages: aws.Int64(1),
+			MaxNumberOfMessages: aws.Int64(10), // Adjust the batch size as needed
 			WaitTimeSeconds:     aws.Int64(20),
 		})
 		if err != nil {
@@ -88,64 +94,68 @@ func main() {
 			continue
 		}
 
-		// Process each message
+		// Send messages to the channel for processing by goroutines
 		for _, message := range result.Messages {
-			fmt.Printf("Received message: %s\n", *message.Body)
+			messageChannel <- message
+		}
+	}
+}
 
-			// Unmarshal the JSON data
-			var msgBody MessageBody
-			err := json.Unmarshal([]byte(*message.Body), &msgBody)
-			if err != nil {
-				log.Printf("Error parsing JSON message: %v\n", err)
-				continue
-			}
+func processMessages(messageChannel chan *sqs.Message, sqsClient *sqs.SQS) {
+	for message := range messageChannel {
+		fmt.Printf("Received message: %s\n", *message.Body)
 
-			// Combine user's code with existing code
-			combinedCode := existingGoCode + msgBody.CodeSnippet
+		// Unmarshal the JSON data
+		var msgBody MessageBody
+		err := json.Unmarshal([]byte(*message.Body), &msgBody)
+		if err != nil {
+			log.Printf("Error parsing JSON message: %v\n", err)
+			continue
+		}
 
-			// Create a temporary Go source file
-			tempFile := fmt.Sprintf("./usercode_%s.go", uuid.New())
-			err = ioutil.WriteFile(tempFile, []byte(combinedCode), 0644)
-			if err != nil {
-				log.Printf("Error creating temporary Go file: %v\n", err)
-				continue
-			}
+		// Combine user's code with existing code
+		combinedCode := existingGoCode + msgBody.CodeSnippet
 
-			// Create and run a Docker container
-			output, err := executeInDocker(tempFile)
-			if err != nil {
-				log.Printf("Error executing user code in Docker: %v\n", err)
-				// Handle error...
+		// Create a temporary Go source file
+		tempFile := fmt.Sprintf("./usercode_%s.go", uuid.New())
+		err = ioutil.WriteFile(tempFile, []byte(combinedCode), 0644)
+		if err != nil {
+			log.Printf("Error creating temporary Go file: %v\n", err)
+			continue
+		}
+
+		// Create and run a Docker container
+		output, err := executeInDocker(tempFile)
+		if err != nil {
+			log.Printf("Error executing user code in Docker: %v\n", err)
+			// Handle error...
+		} else {
+			fmt.Printf("User code output: %s\n", output)
+			// Check if the test results indicate success
+			if strings.Contains(output, "FAIL") {
+				fmt.Println("User code test failed")
+				// Handle test failure...
 			} else {
-				fmt.Printf("User code output: %s\n", output)
-				// Check if the test results indicate success
-				if strings.Contains(output, "FAIL") {
-					fmt.Println("User code test failed")
-					// Handle test failure...
-				} else {
-					fmt.Println("User code test passed")
-					// Send output to appropriate destination...
-				}
-			}
-
-			// Delete the message from the queue
-			_, err = sqsClient.DeleteMessage(&sqs.DeleteMessageInput{
-				QueueUrl:      aws.String(sqsQueueURL),
-				ReceiptHandle: message.ReceiptHandle,
-			})
-			if err != nil {
-				log.Printf("Error deleting message: %v\n", err)
-				// Handle error...
-			}
-
-			// Clean up the temporary Go source file
-			err = os.Remove(tempFile)
-			if err != nil {
-				log.Printf("Error deleting temporary Go file: %v\n", err)
-				// Handle error...
+				fmt.Println("User code test passed")
+				// Send output to appropriate destination...
 			}
 		}
 
-		time.Sleep(1 * time.Second)
+		// Delete the message from the queue
+		_, err = sqsClient.DeleteMessage(&sqs.DeleteMessageInput{
+			QueueUrl:      aws.String(sqsQueueURL),
+			ReceiptHandle: message.ReceiptHandle,
+		})
+		if err != nil {
+			log.Printf("Error deleting message: %v\n", err)
+			// Handle error...
+		}
+
+		// Clean up the temporary Go source file
+		err = os.Remove(tempFile)
+		if err != nil {
+			log.Printf("Error deleting temporary Go file: %v\n", err)
+			// Handle error...
+		}
 	}
 }
